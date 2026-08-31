@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+data/*.csv
+.DS_Store
+run_log.txt
+hw6.docx
+hw6_text.txt
+_hw5_ref/
+
+# IDE — не заливать
+.cursor/
+.vscode/
+*.code-workspace
+.idea/
+.claude/
