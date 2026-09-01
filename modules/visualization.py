@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from math import pi
 from pathlib import Path
 from typing import Any
@@ -199,7 +200,18 @@ class ClusterVisualizer:
         tsne = TSNE(n_components=2, random_state=random_state, perplexity=30).fit_transform(x)
         projections: list[tuple[str, np.ndarray]] = [("PCA", pca), ("t-SNE", tsne)]
         if HAS_UMAP:
-            umap_coords = umap.UMAP(n_components=2, random_state=random_state).fit_transform(x)
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message="n_jobs value .* overridden",
+                    category=UserWarning,
+                    module="umap",
+                )
+                umap_coords = umap.UMAP(
+                    n_components=2,
+                    random_state=random_state,
+                    n_jobs=1,
+                ).fit_transform(x)
             projections.append(("UMAP", umap_coords))
 
         fig, axes = plt.subplots(1, len(projections), figsize=(6 * len(projections), 5))
