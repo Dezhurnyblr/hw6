@@ -1,12 +1,12 @@
-"""Предобработка: производные признаки, One-Hot, StandardScaler."""
+"""Предобработка: производные признаки, One-Hot, масштабирование, выбросы, мультиколлинеарность."""
 
 from __future__ import annotations
 
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import RobustScaler, StandardScaler
 
 SPENDING_COLS = [
     "MntWines",
@@ -33,6 +33,13 @@ PROFILE_COLS = [
 ]
 DROP_COLS = ["ID", "Z_CostContact", "Z_Revenue", "Year_Birth", "Dt_Customer"]
 CAT_COLS = ["Education", "Marital_Status"]
+# Пары с |r| > 0.8 — оставляем один признак из пары (мультиколлинеарность)
+MULTICOLLINEAR_DROP = [
+    "MntMeatProducts",  # ↔ Total_Spending, MntWines
+    "NumStorePurchases",  # ↔ Total_Purchases
+    "NumWebPurchases",  # ↔ Total_Purchases
+]
+PARTNER_STATUSES = {"Married", "Together"}
 
 
 class PreparedData(NamedTuple):
@@ -42,8 +49,11 @@ class PreparedData(NamedTuple):
     processed: pd.DataFrame
     feature_names: tuple[str, ...]
     x: np.ndarray
-    scaler: StandardScaler
+    scaler: StandardScaler | RobustScaler
     profile_cols: tuple[str, ...]
+    dropped_cols: tuple[str, ...]
+    outlier_stats: dict[str, int]
+    scaler_name: str
 
 
 class CustomerPreprocessor:
@@ -74,8 +84,48 @@ class CustomerPreprocessor:
             "high_corr": high_corr,
         }
 
-    def prepare(self, frame: pd.DataFrame) -> PreparedData:
-        """Пропуски, производные признаки, One-Hot, StandardScaler."""
+    @staticmethod
+    def _adults_in_household(marital_status: pd.Series) -> pd.Series:
+        """Взрослых в домохозяйстве: 2 при партнёре (Married/Together), иначе 1."""
+        return marital_status.apply(
+            lambda status: 2 if status in PARTNER_STATUSES else 1
+        )
+
+    @staticmethod
+    def cap_outliers_iqr(
+        frame: pd.DataFrame,
+        cols: list[str],
+        *,
+        factor: float = 1.5,
+    ) -> tuple[pd.DataFrame, dict[str, int]]:
+        """Winsorization по IQR: обрезаем хвосты, не удаляем строки."""
+        df = frame.copy()
+        capped: dict[str, int] = {}
+        for col in cols:
+            if col not in df.columns:
+                continue
+            q1, q3 = df[col].quantile(0.25), df[col].quantile(0.75)
+            iqr = q3 - q1
+            lower, upper = q1 - factor * iqr, q3 + factor * iqr
+            before = df[col].copy()
+            df[col] = df[col].clip(lower=lower, upper=upper)
+            capped[col] = int((before != df[col]).sum())
+        return df, capped
+
+    def prepare(
+        self,
+        frame: pd.DataFrame,
+        *,
+        handle_outliers: bool = True,
+        drop_multicollinear: bool = True,
+        scaler: Literal["standard", "robust"] = "robust",
+    ) -> PreparedData:
+        """Пропуски, производные признаки, One-Hot, масштабирование.
+
+        Выбросы: IQR-winsorization на тратах и Income (K-Means чувствителен).
+        Мультиколлинеарность: удаляем избыточные признаки (|r|>0.8).
+        Масштабирование: RobustScaler по умолчанию (медиана/IQR, не усиливает выбросы).
+        """
         df = frame.copy()
         df = df.drop(columns=[c for c in DROP_COLS if c in df.columns])
 
@@ -87,25 +137,51 @@ class CustomerPreprocessor:
         df["Customer_For"] = (customer_dates - customer_dates.min()).dt.days
         df["Total_Spending"] = df[SPENDING_COLS].sum(axis=1)
         df["Total_Purchases"] = df[PURCHASE_COLS].sum(axis=1)
-        df["Family_Size"] = df["Kidhome"] + df["Teenhome"] + 1
+
+        adults = self._adults_in_household(frame["Marital_Status"])
+        df["Adults_In_Household"] = adults
+        df["Family_Size"] = df["Kidhome"] + df["Teenhome"] + adults
+
+        outlier_stats: dict[str, int] = {}
+        if handle_outliers:
+            outlier_cols = SPENDING_COLS + ["Income", "NumWebVisitsMonth"]
+            df, outlier_stats = self.cap_outliers_iqr(df, outlier_cols)
 
         cat_encoded = pd.get_dummies(df[CAT_COLS], drop_first=True)
         features = df.drop(columns=CAT_COLS + (["Response"] if "Response" in df.columns else []))
         x_df = pd.concat([features, cat_encoded], axis=1)
+
+        dropped: list[str] = []
+        if drop_multicollinear:
+            for col in MULTICOLLINEAR_DROP:
+                if col in x_df.columns:
+                    x_df = x_df.drop(columns=[col])
+                    dropped.append(col)
+
         names = tuple(str(col) for col in x_df.columns)
 
-        scaler = StandardScaler()
-        x_scaled = scaler.fit_transform(x_df)
+        if scaler == "robust":
+            scaler_obj: StandardScaler | RobustScaler = RobustScaler()
+            scaler_name = "RobustScaler"
+        else:
+            scaler_obj = StandardScaler()
+            scaler_name = "StandardScaler"
+
+        x_scaled = scaler_obj.fit_transform(x_df)
 
         print(
-            f"[Preprocessor] признаков={len(names)}, "
-            f"строк={len(x_df)}, StandardScaler применён"
+            f"[Preprocessor] признаков={len(names)}, строк={len(x_df)}, "
+            f"{scaler_name}, outliers_capped={sum(outlier_stats.values())}, "
+            f"dropped_multicollinear={dropped}"
         )
         return PreparedData(
             raw=frame,
             processed=df,
             feature_names=names,
             x=x_scaled,
-            scaler=scaler,
+            scaler=scaler_obj,
             profile_cols=tuple(PROFILE_COLS),
+            dropped_cols=tuple(dropped),
+            outlier_stats=outlier_stats,
+            scaler_name=scaler_name,
         )

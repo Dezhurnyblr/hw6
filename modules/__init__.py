@@ -3,6 +3,7 @@
 from .clustering import ClusterBench
 from .datasets import CustomerDataset
 from .evaluation import ClusterEvaluator
+from .hypotheses import HypothesisTester
 from .preprocessing import PreparedData, CustomerPreprocessor
 from .visualization import ClusterVisualizer
 
@@ -12,5 +13,6 @@ __all__ = [
     "ClusterVisualizer",
     "CustomerDataset",
     "CustomerPreprocessor",
+    "HypothesisTester",
     "PreparedData",
 ]

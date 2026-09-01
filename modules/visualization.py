@@ -10,11 +10,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 from pandas.plotting import parallel_coordinates
 from scipy.cluster.hierarchy import dendrogram, linkage
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from sklearn.metrics import silhouette_samples
+from sklearn.neighbors import NearestNeighbors
 
 try:
     import umap
@@ -277,4 +279,171 @@ class ClusterVisualizer:
         parallel_coordinates(pc_df, "Cluster", colormap=plt.cm.Set2, alpha=0.3, ax=ax)
         ax.set_title("Параллельные координаты (нормализованные признаки)")
         ax.set_ylabel("Нормализованное значение")
+        return self._save(fig, filename)
+
+    def plot_3d_pca(
+        self,
+        x: np.ndarray,
+        labels: np.ndarray,
+        *,
+        k: int,
+        random_state: int = 42,
+        filename: str = "projections_3d_pca.png",
+    ) -> Path:
+        pca = PCA(n_components=3, random_state=random_state)
+        coords = pca.fit_transform(x)
+        fig = plt.figure(figsize=(10, 8))
+        ax = fig.add_subplot(111, projection="3d")
+        scatter = ax.scatter(
+            coords[:, 0],
+            coords[:, 1],
+            coords[:, 2],
+            c=labels,
+            cmap="Set2",
+            s=15,
+            alpha=0.7,
+        )
+        ax.set_xlabel(f"PC1 ({pca.explained_variance_ratio_[0]:.1%})")
+        ax.set_ylabel(f"PC2 ({pca.explained_variance_ratio_[1]:.1%})")
+        ax.set_zlabel(f"PC3 ({pca.explained_variance_ratio_[2]:.1%})")
+        ax.set_title(f"3D PCA — K-Means (k={k})")
+        fig.colorbar(scatter, ax=ax, shrink=0.6, label="Кластер")
+        return self._save(fig, filename)
+
+    def plot_3d_features(
+        self,
+        processed: pd.DataFrame,
+        labels: np.ndarray,
+        *,
+        x_col: str = "Income",
+        y_col: str = "Total_Spending",
+        z_col: str = "Age",
+        filename: str = "projections_3d_features.png",
+    ) -> Path:
+        fig = plt.figure(figsize=(10, 8))
+        ax = fig.add_subplot(111, projection="3d")
+        scatter = ax.scatter(
+            processed[x_col],
+            processed[y_col],
+            processed[z_col],
+            c=labels,
+            cmap="Set2",
+            s=20,
+            alpha=0.7,
+        )
+        ax.set_xlabel(x_col)
+        ax.set_ylabel(y_col)
+        ax.set_zlabel(z_col)
+        ax.set_title(f"3D: {x_col} × {y_col} × {z_col} по кластерам")
+        fig.colorbar(scatter, ax=ax, shrink=0.6, label="Кластер")
+        return self._save(fig, filename)
+
+    def plot_k_distance(
+        self,
+        x: np.ndarray,
+        *,
+        min_samples: int = 10,
+        eps: float | None = None,
+        filename: str = "dbscan_k_distance.png",
+    ) -> Path:
+        nbrs = NearestNeighbors(n_neighbors=min_samples).fit(x)
+        distances, _ = nbrs.kneighbors(x)
+        k_dist = np.sort(distances[:, -1])
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.plot(k_dist, color="steelblue", linewidth=1)
+        if eps is not None:
+            ax.axhline(eps, color="red", linestyle="--", label=f"eps={eps:.3f}")
+            ax.legend()
+        ax.set_title(f"k-distance graph (k={min_samples}) — выбор eps для DBSCAN")
+        ax.set_xlabel("Точки (отсортированы)")
+        ax.set_ylabel(f"{min_samples}-е расстояние")
+        return self._save(fig, filename)
+
+    def plot_hypothesis_income_deals(
+        self,
+        frame: pd.DataFrame,
+        *,
+        filename: str = "hypothesis_income_deals.png",
+    ) -> Path:
+        clean = frame[["Income", "NumDealsPurchases"]].dropna()
+        clean = clean.copy()
+        clean["Income_Q"] = pd.qcut(
+            clean["Income"], 4, labels=["Q1 (низкий)", "Q2", "Q3", "Q4 (высокий)"]
+        )
+        fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+        sns.scatterplot(
+            data=clean, x="Income", y="NumDealsPurchases", alpha=0.4, ax=axes[0]
+        )
+        axes[0].set_title("H1/H6: Доход vs покупки по скидкам")
+        sns.boxplot(
+            data=clean, x="Income_Q", y="NumDealsPurchases", hue="Income_Q", palette="Set2", legend=False, ax=axes[1]
+        )
+        axes[1].set_title("NumDealsPurchases по квартилям дохода")
+        axes[1].tick_params(axis="x", rotation=15)
+        return self._save(fig, filename)
+
+    def plot_hypothesis_channels(
+        self,
+        frame: pd.DataFrame,
+        *,
+        filename: str = "hypothesis_income_channels.png",
+    ) -> Path:
+        clean = frame[["Income", "NumWebPurchases", "NumStorePurchases"]].dropna()
+        clean = clean.copy()
+        clean["Income_Q"] = pd.qcut(clean["Income"], 4, labels=["Q1", "Q2", "Q3", "Q4"])
+        melted = clean.melt(
+            id_vars="Income_Q",
+            value_vars=["NumWebPurchases", "NumStorePurchases"],
+            var_name="Канал",
+            value_name="Покупки",
+        )
+        fig, ax = plt.subplots(figsize=(9, 5))
+        sns.barplot(
+            data=melted,
+            x="Income_Q",
+            y="Покупки",
+            hue="Канал",
+            palette="muted",
+            ax=ax,
+        )
+        ax.set_title("H2: Канал покупок по квартилям дохода")
+        return self._save(fig, filename)
+
+    def plot_hypothesis_family_meat(
+        self,
+        frame: pd.DataFrame,
+        *,
+        filename: str = "hypothesis_family_meat.png",
+    ) -> Path:
+        clean = frame[["Family_Size", "MntMeatProducts", "Kidhome", "Teenhome"]].dropna()
+        clean = clean.copy()
+        clean["Has_Children"] = (clean["Kidhome"] + clean["Teenhome"] > 0).map(
+            {True: "С детьми", False: "Без детей"}
+        )
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+        sns.boxplot(
+            data=clean, x="Has_Children", y="MntMeatProducts", hue="Has_Children", palette="Set2", legend=False, ax=axes[0]
+        )
+        axes[0].set_title("H3: Траты на мясо — семьи с/без детей")
+        sns.scatterplot(
+            data=clean, x="Family_Size", y="MntMeatProducts", hue="Has_Children", ax=axes[1]
+        )
+        axes[1].set_title("Family_Size vs MntMeatProducts")
+        return self._save(fig, filename)
+
+    def plot_outlier_impact(
+        self,
+        k_range: list[int],
+        sil_with: list[float],
+        sil_without: list[float],
+        *,
+        filename: str = "outlier_impact_silhouette.png",
+    ) -> Path:
+        fig, ax = plt.subplots(figsize=(9, 4))
+        ax.plot(k_range, sil_with, "o-", label="С обработкой выбросов (IQR cap)", color="steelblue")
+        ax.plot(k_range, sil_without, "s--", label="Без обработки", color="coral")
+        ax.set_xlabel("k")
+        ax.set_ylabel("Silhouette")
+        ax.set_title("Влияние выбросов на K-Means (StandardScaler, без cap)")
+        ax.legend()
         return self._save(fig, filename)

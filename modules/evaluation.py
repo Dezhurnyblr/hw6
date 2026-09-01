@@ -20,6 +20,16 @@ class KSearchResult:
 
 
 @dataclass
+class KPickResult:
+    k: int
+    best_sil_k: int
+    max_silhouette: float
+    preferred_silhouette: float
+    used_preferred: bool
+    reason: str
+
+
+@dataclass
 class AnomalyReport:
     counts: dict[str, int]
     overlap: pd.DataFrame
@@ -48,13 +58,50 @@ class ClusterEvaluator:
             silhouettes.append(float(silhouette_score(x, labels)))
         return KSearchResult(k_range=k_range, inertias=inertias, silhouettes=silhouettes)
 
-    def pick_k(self, search: KSearchResult, *, preferred: int = 4) -> int:
-        best_sil = search.k_range[int(np.argmax(search.silhouettes))]
-        print(
-            f"[Evaluator] max silhouette при k={best_sil}, "
-            f"беру k={preferred} (интерпретируемость)"
+    def pick_k(
+        self,
+        search: KSearchResult,
+        *,
+        preferred: int = 4,
+        silhouette_threshold: float = 0.90,
+    ) -> KPickResult:
+        """Выбор k: preferred, если его silhouette ≥ threshold × max; иначе best_sil."""
+        best_idx = int(np.argmax(search.silhouettes))
+        best_sil_k = search.k_range[best_idx]
+        max_sil = search.silhouettes[best_idx]
+
+        if preferred in search.k_range:
+            pref_idx = search.k_range.index(preferred)
+            pref_sil = search.silhouettes[pref_idx]
+        else:
+            pref_sil = -1.0
+
+        threshold_value = silhouette_threshold * max_sil
+        if preferred in search.k_range and pref_sil >= threshold_value:
+            reason = (
+                f"k={preferred}: silhouette={pref_sil:.3f} ≥ "
+                f"{silhouette_threshold:.0%}×max({max_sil:.3f}) — интерпретируемость"
+            )
+            used_preferred = True
+            chosen = preferred
+        else:
+            reason = (
+                f"k={best_sil_k}: silhouette={max_sil:.3f} — "
+                f"preferred k={preferred} дал бы {pref_sil:.3f} "
+                f"(< {silhouette_threshold:.0%}×max)"
+            )
+            used_preferred = False
+            chosen = best_sil_k
+
+        print(f"[Evaluator] {reason}")
+        return KPickResult(
+            k=chosen,
+            best_sil_k=best_sil_k,
+            max_silhouette=max_sil,
+            preferred_silhouette=pref_sil,
+            used_preferred=used_preferred,
+            reason=reason,
         )
-        return preferred
 
     def cluster_profile(
         self,
